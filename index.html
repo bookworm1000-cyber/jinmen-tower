@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>人面アニマル積み合戦</title>
+<meta name="description" content="自分の顔をどうぶつに貼って積み上げる、おバカな物理パズル。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=M+PLUS+Rounded+1c:wght@500;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<section id="title" class="screen active">
+  <h1>人面<br>アニマル<br>積み合戦</h1>
+  <p class="lead">自分の顔のどうぶつを交互に積み上げる。<br>落としたほうが負け。</p>
+  <button class="btn primary" data-mode="cpu">CPUと対戦</button>
+  <button class="btn" data-mode="2p">ふたりで対戦</button>
+  <button class="btn small" data-mode="solo">ひとりで練習</button>
+  <p class="note">カメラの映像はこの端末の中だけで使います。どこにも送信しません。</p>
+  <button class="mute" id="btnMute"></button>
+</section>
+
+<section id="capture" class="screen">
+  <h2 id="capTitle">顔をとろう</h2>
+  <p class="lead">点線の中に顔を合わせてください</p>
+  <div class="cam-box">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="shot" width="240" height="300" class="hidden"></canvas>
+    <div class="guide"></div>
+  </div>
+  <p id="camMsg" class="note"></p>
+  <div class="row" id="capButtons">
+    <button class="btn primary" id="btnShoot">撮影</button>
+  </div>
+  <div class="row hidden" id="okButtons">
+    <button class="btn small" id="btnRetake">とり直す</button>
+    <button class="btn primary small" id="btnOk">これでOK</button>
+  </div>
+  <div class="row" id="altButtons">
+    <label class="btn small">写真を選ぶ<input type="file" id="file" accept="image/*" hidden></label>
+    <button class="btn small" id="btnSkip">顔なしで遊ぶ</button>
+  </div>
+</section>
+
+<section id="game" class="screen">
+  <canvas id="cv"></canvas>
+  <div class="hud">
+    <div id="count">0</div>
+    <div class="turn"><img id="turnFace" alt=""><span id="turnName"></span></div>
+    <div id="animalName"></div>
+  </div>
+  <p id="hint">ドラッグで動かして、指を離すと落ちる</p>
+  <button id="btnRotate" aria-label="回転">回す</button>
+  <div id="result" class="overlay hidden">
+    <div class="card">
+      <img id="resFace" alt="">
+      <h2 id="resTitle"></h2>
+      <p id="resText"></p>
+      <button class="btn primary" id="btnAgain">もう一回</button>
+      <button class="btn small" id="btnSave">画像を保存</button>
+      <button class="btn small" id="btnTop">タイトルへ</button>
+    </div>
+  </div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script src="js/animals.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
