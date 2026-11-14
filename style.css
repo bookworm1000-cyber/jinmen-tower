@@ -78,12 +78,20 @@ h2 { font-weight: 800; font-size: 24px; }
   background: #4a3a30;
 }
 #video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-.guide, #shot {
+.guide {
   position: absolute;
   left: 22%;
   top: 15%;
   width: 56%;
   height: 70%;
+}
+#shot {
+  position: absolute;
+  inset: 6%;
+  width: 88%;
+  height: 88%;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 6px rgba(0,0,0,.45));
 }
 .guide {
   border: 4px dashed #fff;
@@ -194,3 +202,23 @@ h2 { font-weight: 800; font-size: 24px; }
   color: var(--ink);
   cursor: pointer;
 }
+
+.move {
+  position: absolute;
+  bottom: calc(32px + env(safe-area-inset-bottom));
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  border: 3px solid var(--ink);
+  background: var(--paper);
+  box-shadow: 0 5px 0 var(--ink);
+  font: inherit;
+  font-size: 26px;
+  color: var(--ink);
+  cursor: pointer;
+  touch-action: none;
+}
+.move:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+#btnLeft { left: calc(50% - 150px); }
+#btnRight { left: calc(50% + 80px); }
+.move:disabled { opacity: .4; }

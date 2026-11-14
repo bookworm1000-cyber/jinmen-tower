@@ -1,5 +1,5 @@
 (() => {
-  const { Engine, Composite, Bodies, Body, Events } = Matter;
+  const { Engine, Composite, Bodies, Body, Events, Sleeping } = Matter;
   const $ = s => document.querySelector(s);
   const TAU = Math.PI * 2;
   const INK = '#3a2a1e';
@@ -61,16 +61,97 @@
   let stream = null, currentShot = null;
   let mode = 'cpu', players = [], capIndex = 0;
 
-  function makeFace(src, sx, sy, sw, sh, mirror) {
+  // 顔の輪郭は MediaPipe Face Landmarker で取る。読み込めなかったときや顔が見つからないときは楕円で切る。
+  const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+  const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377,
+    152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+  let landmarkerP = null;
+  function loadLandmarker() {
+    if (!landmarkerP) {
+      landmarkerP = import(`${MP}/vision_bundle.mjs`).then(async ({ FilesetResolver, FaceLandmarker }) => {
+        const files = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
+        return FaceLandmarker.createFromOptions(files, {
+          baseOptions: { modelAssetPath: 'models/face_landmarker.task', delegate: 'CPU' },
+          runningMode: 'IMAGE', numFaces: 1,
+        });
+      }).catch(e => { console.warn(e); landmarkerP = null; return null; });
+    }
+    return landmarkerP;
+  }
+  const withTimeout = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r(null), ms))]);
+
+  // 輪郭の多角形 pts(元画像のピクセル座標)の内側を、ふちをぼかして切り抜く
+  function cutPolygon(src, pts, angle) {
+    const cx = pts.reduce((a, p) => a + p.x, 0) / pts.length;
+    const cy = pts.reduce((a, p) => a + p.y, 0) / pts.length;
+    const cos = Math.cos(-angle), sin = Math.sin(-angle);
+    const lv = pts.map(p => ({ x: (p.x - cx) * cos - (p.y - cy) * sin, y: (p.x - cx) * sin + (p.y - cy) * cos }));
+    const xs = lv.map(p => p.x), ys = lv.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const k = FW / (maxX - minX), pad = 6;
+    const W = FW + pad * 2, H = Math.round((maxY - minY) * k) + pad * 2;
+    const ox = pad - minX * k, oy = pad - minY * k;
     const c = document.createElement('canvas');
-    c.width = FW; c.height = FH;
+    c.width = W; c.height = H;
     const g = c.getContext('2d');
-    g.beginPath();
-    g.ellipse(FW / 2, FH / 2, FW / 2, FH / 2, 0, 0, TAU);
-    g.clip();
-    if (mirror) { g.translate(FW, 0); g.scale(-1, 1); }
-    g.drawImage(src, sx, sy, sw, sh, 0, 0, FW, FH);
+    g.save();
+    g.translate(ox, oy);
+    g.scale(k, k);
+    g.rotate(-angle);
+    g.translate(-cx, -cy);
+    g.drawImage(src, 0, 0);
+    g.restore();
+    // shadowBlur でぼかしたマスク (ctx.filter は Safari で使えないため)
+    const m = document.createElement('canvas');
+    m.width = W; m.height = H;
+    const mg = m.getContext('2d');
+    mg.shadowColor = '#000';
+    mg.shadowBlur = 5;
+    mg.shadowOffsetX = W * 2;
+    mg.beginPath();
+    lv.forEach((p, i) => {
+      const x = ox + p.x * k * 0.985 - W * 2, y = oy + p.y * k * 0.985;
+      i ? mg.lineTo(x, y) : mg.moveTo(x, y);
+    });
+    mg.closePath();
+    mg.fill();
+    g.globalCompositeOperation = 'destination-in';
+    g.drawImage(m, 0, 0);
     return c;
+  }
+
+  async function makeFace(src, mirror, guess) {
+    const w = src.videoWidth || src.naturalWidth, h = src.videoHeight || src.naturalHeight;
+    const frame = document.createElement('canvas');
+    frame.width = w; frame.height = h;
+    const fg = frame.getContext('2d');
+    if (mirror) { fg.translate(w, 0); fg.scale(-1, 1); }
+    fg.drawImage(src, 0, 0, w, h);
+    const lm = await withTimeout(loadLandmarker(), 15000);
+    let res = null;
+    if (lm) { try { res = lm.detect(frame); } catch (e) { console.warn(e); } }
+    const L = res && res.faceLandmarks && res.faceLandmarks[0];
+    if (L) {
+      const P = i => ({ x: L[i].x * w, y: L[i].y * h });
+      const e1 = P(33), e2 = P(263);
+      const angle = Math.atan2(e2.y - e1.y, e2.x - e1.x);
+      const eyeY = (e1.y + e2.y) / 2;
+      const c = P(1);
+      // 輪郭の上端は額の途中までなので、目より上は少し上に伸ばす
+      const pts = FACE_OVAL.map(i => {
+        const p = P(i);
+        const up = p.y < eyeY ? 1.12 : 1.02;
+        return { x: c.x + (p.x - c.x) * 1.02, y: c.y + (p.y - c.y) * up };
+      });
+      return cutPolygon(frame, pts, angle);
+    }
+    const [sx, sy, sw, sh] = guess(w, h);
+    const pts = [];
+    for (let i = 0; i < 48; i++) {
+      const t = i / 48 * TAU;
+      pts.push({ x: sx + sw / 2 + Math.cos(t) * sw * 0.42, y: sy + sh / 2 + Math.sin(t) * sh * 0.45 });
+    }
+    return cutPolygon(frame, pts, 0);
   }
 
   function drawnFace(kind) {
@@ -135,27 +216,41 @@
     $('#capTitle').textContent = mode === '2p' ? `プレイヤー${capIndex + 1}の顔をとろう` : 'あなたの顔をとろう';
     setShot(null);
     startCamera();
+    loadLandmarker();
   }
   function setShot(c) {
     currentShot = c;
+    if (c) { shotCv.width = c.width; shotCv.height = c.height; }
     shotCv.classList.toggle('hidden', !c);
     video.classList.toggle('hidden', !!c);
+    $('.guide').classList.toggle('hidden', !!c);
     $('#capButtons').classList.toggle('hidden', !!c);
     $('#altButtons').classList.toggle('hidden', !!c);
     $('#okButtons').classList.toggle('hidden', !c);
     if (c) {
       const g = shotCv.getContext('2d');
-      g.clearRect(0, 0, FW, FH);
+      g.clearRect(0, 0, c.width, c.height);
       g.drawImage(c, 0, 0);
     }
   }
 
+  let busy = false;
+  async function capture(src, mirror, guess) {
+    if (busy) return;
+    busy = true;
+    $('#camMsg').textContent = '顔を切り抜いています…';
+    try {
+      setShot(await makeFace(src, mirror, guess));
+      $('#camMsg').textContent = '';
+    } finally { busy = false; }
+  }
   $('#btnShoot').onclick = () => {
     const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw) { $('#camMsg').textContent = 'カメラの準備ができていません。'; return; }
-    const m = Math.min(vw, vh), sw = m * GW, sh = m * GH;
     sfx('shutter');
-    setShot(makeFace(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, true));
+    video.pause();
+    capture(video, true, (w, h) => { const m = Math.min(w, h), sw = m * GW, sh = m * GH; return [(w - sw) / 2, (h - sh) / 2, sw, sh]; })
+      .finally(() => video.play().catch(() => {}));
   };
   $('#btnRetake').onclick = () => setShot(null);
   $('#btnSkip').onclick = () => setShot(drawnFace(capIndex % 2));
@@ -164,12 +259,10 @@
     if (!f) return;
     const img = new Image();
     img.onload = () => {
-      const w = img.naturalWidth, h = img.naturalHeight;
-      let sw, sh, sx, sy;
-      if (w / h > FW / FH) { sh = h; sw = h * FW / FH; sx = (w - sw) / 2; sy = 0; }
-      else { sw = w; sh = w * FH / FW; sx = 0; sy = (h - sh) * 0.3; }
-      setShot(makeFace(img, sx, sy, sw, sh, false));
-      URL.revokeObjectURL(img.src);
+      capture(img, false, (w, h) => {
+        if (w / h > FW / FH) { const sw = h * FW / FH; return [(w - sw) / 2, 0, sw, h]; }
+        const sh = w * FH / FW; return [0, (h - sh) * 0.3, w, sh];
+      }).finally(() => URL.revokeObjectURL(img.src));
     };
     img.src = URL.createObjectURL(f);
     e.target.value = '';
@@ -228,7 +321,7 @@
   let dpr = 1, W = 0, H = 0, scale = 1;
   let engine = null, bodies = [], state = 'idle', cur = null;
   let curPlayer = 0, lastDropper = 0, placed = 0, lastDef = -1;
-  let hold = { x: 0, y: -200, a: 0 };
+  let hold = { x: 0, y: -200, a: 0, ta: 0 };
   let camTop = 0, settleFrames = 0, dropSteps = 0, drag = null, cpu = null;
 
   function resize() {
@@ -278,7 +371,7 @@
     do { i = Math.floor(Math.random() * DEFS.length); } while (lastDef >= 0 && DEFS[i].name === DEFS[lastDef].name);
     lastDef = i;
     cur = DEFS[i];
-    hold = { x: 0, y: towerTop() - cur.R - 30, a: 0 };
+    hold = { x: 0, y: towerTop() - cur.R - 30, a: 0, ta: 0 };
     cpu = null;
     state = 'hold';
     updateHud();
@@ -290,14 +383,14 @@
     $('#turnFace').src = p.thumb;
     $('#turnName').textContent = mode === 'solo' ? 'あなたの番' : `${p.name}の番`;
     $('#animalName').textContent = cur.name;
-    $('#btnRotate').disabled = !!p.cpu;
+    for (const id of ['#btnRotate', '#btnLeft', '#btnRight']) $(id).disabled = !!p.cpu;
   }
 
   function drop() {
     if (state !== 'hold') return;
     const b = makeBody(cur);
     Body.setPosition(b, { x: hold.x, y: hold.y });
-    Body.setAngle(b, hold.a);
+    Body.setAngle(b, hold.ta);
     b.plugin.def = cur;
     b.plugin.face = players[curPlayer].face;
     Composite.add(engine.world, b);
@@ -389,22 +482,23 @@
     const snap = bodies.map(b => ({ def: b.plugin.def, x: b.position.x, y: b.position.y, a: b.angle }));
     const cands = [];
     for (let k = 0; k < 8; k++) {
-      for (let x = -120; x <= 120; x += 30) cands.push({ x: x + (Math.random() - 0.5) * 16, k });
+      for (let x = -140; x <= 140; x += 20) cands.push({ x: x + (Math.random() - 0.5) * 6, k });
     }
-    cands.sort(() => Math.random() - 0.5);
-    cpu = { snap, cands: cands.slice(0, 24), i: 0, best: null, bestScore: -Infinity, start: performance.now(), phase: 'think' };
+    cpu = { snap, cands, i: 0, scored: [], stage: 1, best: null, bestScore: -Infinity, start: performance.now(), phase: 'think' };
   }
 
-  function evalCand(c, snap) {
-    const eng = Engine.create();
-    eng.positionIterations = 4;
-    eng.velocityIterations = 3;
+  // fine=false: 止まっている体を眠らせ、精度も落として速く試す。fine=true: 本番と同じ精度で試す
+  function evalCand(c, snap, steps, fine) {
+    const eng = Engine.create({ enableSleeping: !fine });
+    eng.positionIterations = fine ? 10 : 4;
+    eng.velocityIterations = fine ? 8 : 3;
     addStage(eng);
     const sim = snap.map(s => {
       const b = makeBody(s.def);
       Body.setPosition(b, { x: s.x, y: s.y });
       Body.setAngle(b, s.a);
       Composite.add(eng.world, b);
+      if (!fine) Sleeping.set(b, true);
       return b;
     });
     const nb = makeBody(cur);
@@ -412,7 +506,7 @@
     Body.setAngle(nb, c.k * Math.PI / 4);
     Composite.add(eng.world, nb);
     const all = sim.concat(nb);
-    for (let s = 0; s < 90; s++) {
+    for (let s = 0; s < steps; s++) {
       Engine.update(eng, STEP);
       if (s % 10 === 9 && fallen(all)) return -1e6 + Math.random();
     }
@@ -421,20 +515,32 @@
       const s = snap[i];
       disp = Math.max(disp, Math.hypot(b.position.x - s.x, b.position.y - s.y) + Math.abs(b.angle - s.a) * 30);
     });
-    return -disp * 4 - nb.speed * 30 - nb.angularSpeed * 300 + nb.bounds.min.y * 0.3 - Math.abs(c.x) * 0.05
-      + Math.random() * 6;
+    return -disp * 4 - nb.speed * 30 - nb.angularSpeed * 300 + nb.bounds.min.y * 0.5 - Math.abs(nb.position.x) * 0.15;
   }
 
   function cpuUpdate(now) {
     if (!cpu) planCpu();
     if (cpu.phase === 'think') {
       const t0 = performance.now();
-      while (cpu.i < cpu.cands.length && performance.now() - t0 < 14) {
+      // 1段目: 全候補をざっと試す。2段目: 上位の手を長めに、少しずらした位置でも試し、いちばん悪い結果で比べる
+      while (cpu.i < cpu.cands.length && performance.now() - t0 < 20) {
         const c = cpu.cands[cpu.i++];
-        const s = evalCand(c, cpu.snap);
-        if (s > cpu.bestScore) { cpu.bestScore = s; cpu.best = c; }
+        if (cpu.stage === 1) {
+          cpu.scored.push({ c, s: evalCand(c, cpu.snap, 80) });
+        } else {
+          const s = Math.min(evalCand(c, cpu.snap, 150, true), evalCand({ x: c.x - 5, k: c.k }, cpu.snap, 150, true),
+            evalCand({ x: c.x + 5, k: c.k }, cpu.snap, 150, true));
+          if (s > cpu.bestScore) { cpu.bestScore = s; cpu.best = c; }
+        }
       }
-      if (cpu.i >= cpu.cands.length && now - cpu.start > 700) {
+      if (cpu.stage === 1 && cpu.i >= cpu.cands.length) {
+        cpu.scored.sort((a, b) => b.s - a.s);
+        cpu.best = cpu.scored[0].c;
+        cpu.cands = cpu.scored.slice(0, 5).map(o => o.c);
+        cpu.i = 0;
+        cpu.stage = 2;
+      }
+      if (cpu.stage === 2 && cpu.i >= cpu.cands.length && now - cpu.start > 700) {
         cpu.phase = 'move';
         cpu.turns = 0;
         cpu.lastRot = now;
@@ -444,12 +550,12 @@
     if (cpu.phase === 'move') {
       const tgt = cpu.best;
       if (cpu.turns < tgt.k) {
-        if (now - cpu.lastRot > 220) { hold.a += Math.PI / 4; sfx('rotate'); cpu.turns++; cpu.lastRot = now; }
+        if (now - cpu.lastRot > 220) { rotate(); cpu.turns++; cpu.lastRot = now; }
         return;
       }
       const dx = tgt.x - hold.x;
       hold.x += Math.sign(dx) * Math.min(Math.abs(dx), 4);
-      if (Math.abs(dx) < 0.5) { cpu.phase = 'wait'; cpu.waitStart = now; }
+      if (Math.abs(dx) < 0.5 && Math.abs(hold.ta - hold.a) < 0.01) { cpu.phase = 'wait'; cpu.waitStart = now; }
       return;
     }
     if (cpu.phase === 'wait' && now - cpu.waitStart > 300) drop();
@@ -473,17 +579,40 @@
     if (humanTurn()) drop();
   });
   cv.addEventListener('pointercancel', () => { drag = null; });
-  const rotate = () => { hold.a += Math.PI / 4; sfx('rotate'); };
+  function rotate() { hold.ta += Math.PI / 4; sfx('rotate'); }
   $('#btnRotate').onclick = () => { if (humanTurn()) rotate(); };
+  // 左右移動: キーやボタンを押している間ずっと動く
+  const moveHeld = { left: false, right: false };
+  const keyDir = { ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right' };
   window.addEventListener('keydown', e => {
-    if (!humanTurn()) return;
-    if (e.key === 'ArrowLeft') hold.x = clampX(hold.x - 6);
-    else if (e.key === 'ArrowRight') hold.x = clampX(hold.x + 6);
-    else if (e.key === 'ArrowUp' || e.key === 'r') rotate();
-    else if (e.key === 'ArrowDown' || e.key === ' ') drop();
+    if (keyDir[e.key]) {
+      if (!moveHeld[keyDir[e.key]]) nudge(keyDir[e.key]);
+      moveHeld[keyDir[e.key]] = true;
+      e.preventDefault();
+      return;
+    }
+    if (e.repeat || !humanTurn()) return;
+    if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') rotate();
+    else if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === 's' || e.key === 'S') drop();
     else return;
     e.preventDefault();
   });
+  window.addEventListener('keyup', e => { if (keyDir[e.key]) moveHeld[keyDir[e.key]] = false; });
+  window.addEventListener('blur', () => { moveHeld.left = moveHeld.right = false; });
+  for (const [id, dir] of [['#btnLeft', 'left'], ['#btnRight', 'right']]) {
+    const b = $(id);
+    b.addEventListener('pointerdown', e => { nudge(dir); moveHeld[dir] = true; b.setPointerCapture(e.pointerId); });
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, () => { moveHeld[dir] = false; });
+  }
+  function nudge(dir) { if (humanTurn()) hold.x = clampX(hold.x + (dir === 'right' ? 4 : -4)); }
+  function updateHold(dt) {
+    const d = hold.ta - hold.a;
+    hold.a = Math.abs(d) < 0.01 ? hold.ta : hold.a + Math.sign(d) * Math.min(Math.abs(d), dt * 0.012);
+    if (humanTurn() && !drag) {
+      const v = (moveHeld.right ? 1 : 0) - (moveHeld.left ? 1 : 0);
+      if (v) hold.x = clampX(hold.x + v * dt * 0.22);
+    }
+  }
 
   // ---------- 描画 ----------
   function rr(g, x, y, w, h, r) {
@@ -499,15 +628,13 @@
 
   // 顔は頭より少し大きく、縦長の楕円で貼る。切り抜いたシールのように白フチと影をつける。
   function drawFace(g, p, face) {
-    const w = p.r * 2.1, h = w * FH / FW, cy = p.y - p.r * 0.1;
+    const w = p.r * 2.8, h = w * face.height / face.width, cy = p.y - p.r * 0.25;
     g.save();
-    g.shadowColor = 'rgba(0,0,0,.35)';
-    g.shadowBlur = 5;
-    g.shadowOffsetY = 2;
-    g.fillStyle = '#fff';
-    g.beginPath(); g.ellipse(p.x, cy, w / 2 + 2, h / 2 + 2, 0, 0, TAU); g.fill();
-    g.restore();
+    g.shadowColor = 'rgba(0,0,0,.4)';
+    g.shadowBlur = 6;
+    g.shadowOffsetY = 3;
     g.drawImage(face, p.x - w / 2, cy - h / 2, w, h);
+    g.restore();
   }
 
   function drawPiece(g, def, x, y, a, face) {
@@ -584,8 +711,10 @@
   function loop(now) {
     requestAnimationFrame(loop);
     if (!engine) return;
-    acc += Math.min(100, now - last);
+    const dt = Math.min(100, now - last);
+    acc += dt;
     last = now;
+    if (state === 'hold') updateHold(dt);
     while (acc >= STEP) {
       Engine.update(engine, STEP);
       physicsCheck();
