@@ -1,4 +1,4 @@
-# 人面アニマル積み合戦
+# 人面動物タワーバトル
 
 自分の顔をカメラで撮って、どうぶつの胴体に貼りつけて積み上げる物理パズルです。交互に積んで、落としたほうが負け。
 
@@ -60,3 +60,5 @@ python -m http.server 8000
 ## 効果音
 
 効果音は [効果音ラボ](https://soundeffect-lab.info/) の音を使っています。
+
+CPUの顔は [Mona Lisa, by Leonardo da Vinci, from C2RMF retouched.jpg](https://commons.wikimedia.org/wiki/File:Mona_Lisa,_by_Leonardo_da_Vinci,_from_C2RMF_retouched.jpg)(パブリックドメイン)を切り抜いて使っています。

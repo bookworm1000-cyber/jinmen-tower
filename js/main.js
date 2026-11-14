@@ -267,14 +267,35 @@
     img.src = URL.createObjectURL(f);
     e.target.value = '';
   };
-  $('#btnOk').onclick = () => {
+  // CPU の顔はモナ・リザ (パブリックドメイン)。輪郭が取れないときは顔の位置を決め打ちで楕円に切る
+  const cpuImg = new Image();
+  cpuImg.src = 'img/cpu-face.jpg';
+  let cpuFace = null;
+  async function getCpuFace() {
+    if (cpuFace) return cpuFace;
+    try {
+      if (!cpuImg.complete) await new Promise((ok, ng) => { cpuImg.onload = ok; cpuImg.onerror = ng; });
+      if (!cpuImg.naturalWidth) throw new Error('no image');
+      cpuFace = await makeFace(cpuImg, false, () => [55, 95, 230, 330]);
+    } catch (e) {
+      cpuFace = drawnFace(2);
+    }
+    return cpuFace;
+  }
+
+  $('#btnOk').onclick = async () => {
+    if (busy) return;
     players.push({ name: capName(capIndex), face: currentShot, thumb: currentShot.toDataURL() });
     capIndex++;
     const need = mode === '2p' ? 2 : 1;
     if (capIndex < need) { openCapture(); return; }
     stopCamera();
     if (mode === 'cpu') {
-      const f = drawnFace(2);
+      busy = true;
+      $('#camMsg').textContent = 'CPUの準備中…';
+      const f = await getCpuFace();
+      busy = false;
+      $('#camMsg').textContent = '';
       players.push({ name: 'CPU', face: f, thumb: f.toDataURL(), cpu: true });
     }
     startGame();
@@ -289,9 +310,18 @@
 
   // ---------- どうぶつの準備 ----------
   // 写真の座標(ピクセル)をゲーム内単位に直し、左右反転した版も用意する
+  // 顔は drawFace で描く大きさに合わせた縦長の楕円 (16角形を縦に伸ばす)
+  const FACE_W = 4.2, FACE_UP = 0.4, FACE_ASPECT = 1.25;
+  function faceShape(f) {
+    const a = f.r * FACE_W / 2 * 0.92;
+    return { x: f.x, y: f.y - f.r * FACE_UP, a, b: a * FACE_ASPECT };
+  }
   function makeBody(def) {
     const parts = def.rects.map(([x, y, w, h]) => Bodies.rectangle(x, y, w, h));
-    parts.push(Bodies.circle(def.face.x, def.face.y, def.face.r));
+    const e = faceShape(def.face);
+    const head = Bodies.polygon(e.x, e.y, 16, e.a);
+    Body.scale(head, 1, FACE_ASPECT);
+    parts.push(head);
     return Body.create({ parts, friction: 0.8, frictionStatic: 1, restitution: 0, frictionAir: 0.01 });
   }
 
@@ -311,8 +341,8 @@
     for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
       R = Math.max(R, Math.hypot(sx * def.w / 2 - def.com.x, sy * def.h / 2 - def.com.y));
     }
-    const f = def.face;
-    def.R = Math.max(R, Math.hypot(f.x - def.com.x, f.y - def.com.y) + f.r * 1.3);
+    const e = faceShape(def.face);
+    def.R = Math.max(R, Math.hypot(e.x - def.com.x, e.y - def.com.y) + e.b);
     return def;
   }));
 
@@ -334,8 +364,9 @@
     scale = baseScale;
   }
   window.addEventListener('resize', resize);
-  // 机の天板を画面の7割の高さに置く。ただし床が画面の下に見える位置より下げない
-  const camBase = () => -Math.min(H * 0.7, H - (FLOOR_Y + 20) * scale) / scale;
+  // 机の天板を画面の7割の高さに置く。ただし下のボタンに隠れない高さ (脚が少し見える位置) より下げない
+  const BTN_H = 130, LEG_SHOW = 40;
+  const camBase = () => -Math.min(H * 0.7, H - BTN_H * dpr - LEG_SHOW * scale) / scale;
 
   function addStage(eng) {
     Composite.add(eng.world, [
@@ -631,7 +662,7 @@
 
   // 顔は頭より少し大きく、縦長の楕円で貼る。切り抜いたシールのように白フチと影をつける。
   function drawFace(g, p, face) {
-    const w = p.r * 4.2, h = w * face.height / face.width, cy = p.y - p.r * 0.4;
+    const w = p.r * FACE_W, h = w * face.height / face.width, cy = p.y - p.r * FACE_UP;
     g.save();
     g.shadowColor = 'rgba(0,0,0,.4)';
     g.shadowBlur = 6;
@@ -725,9 +756,9 @@
     }
     if (state === 'hold' && players[curPlayer].cpu) cpuUpdate(now);
     if (state === 'hold' || state === 'drop') {
-      // 塔が高くなったら半分くらいまで引いて全体を映し、それより高ければ上へずらす
-      const need = FLOOR_Y + 20 - (hold.y - cur.R - 70 * dpr / baseScale);
-      const ts = Math.max(baseScale * 0.5, Math.min(baseScale, H / need));
+      // 塔が高くなったら引いて全体を映す (スマホは半分まで、PCは縦1600単位まで)。それより高ければ上へずらす
+      const above = -(hold.y - cur.R - 70 * dpr / baseScale);
+      const ts = Math.max(Math.min(baseScale * 0.5, H / 1600), Math.min(baseScale, (H - BTN_H * dpr) / (above + LEG_SHOW)));
       scale += (ts - scale) * 0.06;
       const target = Math.min(camBase(), hold.y - cur.R - 90 * dpr / scale);
       camTop += (target - camTop) * 0.06;
