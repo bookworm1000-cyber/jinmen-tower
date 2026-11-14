@@ -137,7 +137,7 @@ h2 { font-weight: 800; font-size: 24px; }
 #hint {
   position: absolute;
   left: 16px; right: 16px;
-  bottom: calc(124px + env(safe-area-inset-bottom));
+  top: calc(68px + env(safe-area-inset-top));
   font-weight: 800;
   font-size: 14px;
   opacity: .75;
@@ -222,3 +222,6 @@ h2 { font-weight: 800; font-size: 24px; }
 #btnLeft { left: calc(50% - 150px); }
 #btnRight { left: calc(50% + 80px); }
 .move:disabled { opacity: .4; }
+
+@media (hover: hover) and (pointer: fine) { #hint .touch { display: none; } }
+@media not ((hover: hover) and (pointer: fine)) { #hint .pc { display: none; } }

@@ -6,7 +6,7 @@
 
   // 顔画像は縦長の楕円 (幅:高さ = 0.8:1)
   const FW = 240, FH = 300, GW = 0.56, GH = 0.70;
-  const VIEW_W = 440, VIEW_H = 760, TABLE_W = 300, FLOOR_Y = 150, XLIM = 200;
+  const VIEW_W = 440, VIEW_H_MIN = 420, TABLE_W = 300, FLOOR_Y = 150, XLIM = 200;
   const STEP = 1000 / 60;
 
   // ---------- 画面 ----------
@@ -318,7 +318,7 @@
 
   // ---------- ゲーム状態 ----------
   const cv = $('#cv'), ctx = cv.getContext('2d');
-  let dpr = 1, W = 0, H = 0, scale = 1;
+  let dpr = 1, W = 0, H = 0, scale = 1, baseScale = 1;
   let engine = null, bodies = [], state = 'idle', cur = null;
   let curPlayer = 0, lastDropper = 0, placed = 0, lastDef = -1;
   let hold = { x: 0, y: -200, a: 0, ta: 0 };
@@ -329,10 +329,13 @@
     W = Math.round(innerWidth * dpr);
     H = Math.round(innerHeight * dpr);
     cv.width = W; cv.height = H;
-    scale = Math.min(W / VIEW_W, H / VIEW_H);
+    // 横長の画面(PC)では縦の見える範囲を狭めて大きく映す。スマホは横幅で決まる
+    baseScale = Math.min(W / VIEW_W, H / VIEW_H_MIN);
+    scale = baseScale;
   }
   window.addEventListener('resize', resize);
-  const camBase = () => -(H * 0.7) / scale;
+  // 机の天板を画面の7割の高さに置く。ただし床が画面の下に見える位置より下げない
+  const camBase = () => -Math.min(H * 0.7, H - (FLOOR_Y + 20) * scale) / scale;
 
   function addStage(eng) {
     Composite.add(eng.world, [
@@ -628,7 +631,7 @@
 
   // 顔は頭より少し大きく、縦長の楕円で貼る。切り抜いたシールのように白フチと影をつける。
   function drawFace(g, p, face) {
-    const w = p.r * 2.8, h = w * face.height / face.width, cy = p.y - p.r * 0.25;
+    const w = p.r * 4.2, h = w * face.height / face.width, cy = p.y - p.r * 0.4;
     g.save();
     g.shadowColor = 'rgba(0,0,0,.4)';
     g.shadowBlur = 6;
@@ -722,6 +725,10 @@
     }
     if (state === 'hold' && players[curPlayer].cpu) cpuUpdate(now);
     if (state === 'hold' || state === 'drop') {
+      // 塔が高くなったら半分くらいまで引いて全体を映し、それより高ければ上へずらす
+      const need = FLOOR_Y + 20 - (hold.y - cur.R - 70 * dpr / baseScale);
+      const ts = Math.max(baseScale * 0.5, Math.min(baseScale, H / need));
+      scale += (ts - scale) * 0.06;
       const target = Math.min(camBase(), hold.y - cur.R - 90 * dpr / scale);
       camTop += (target - camTop) * 0.06;
     }
